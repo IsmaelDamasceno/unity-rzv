@@ -1,5 +1,3 @@
-
-
 fn main() {
-    prost_build::compile_protos(&["proto/schema.proto"], &["proto/"]).unwrap();
+    prost_build::compile_protos(&["../proto-schema/schema.proto"], &["../proto-schema/"]).unwrap();
 }
