@@ -1,0 +1,25 @@
+syntax = "proto3";
+package unity_tool;
+
+message UnityObjComponent {
+    int32 gui_id = 1;
+    string local_id = 2;
+    string class_id = 3;
+    string object_name = 4;
+}
+
+message UnityObjGameObject {
+    string local_id = 2;
+    string class_id = 3;
+    string class_name = 4;
+    string name = 5;
+    string tag = 6;
+    int32 layer = 7;
+    bool isActive = 8;
+    repeated UnityObjComponent componentes = 9;
+}
+
+message SceneResult {
+    repeated UnityObjGameObject objects = 1;
+    int32 total_count = 2;
+}
