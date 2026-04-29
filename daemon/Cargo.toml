@@ -1,5 +1,5 @@
 [package]
-name = "unity-rzv"
+name = "unity-rzv-daemon"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,6 +10,7 @@ prost = "0.12"
 # easy error handling
 anyhow = "1.0"
 memchr = "2.8.0"
+aho-corasick = "1.1.4"
 
 [build-dependencies]
 prost-build = "0.12" # Compiles .proto files to Rust code
