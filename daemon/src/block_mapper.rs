@@ -1,6 +1,10 @@
+use aho_corasick::AhoCorasick;
+use memchr::memmem;
+
 use crate::{Finders, find_next_block, parse_header};
 
 const UC_PREFAB_INSTANCE: &str = "1004";
+const UC_GAME_OBJECT: &str = "1";
 
 /// Finds the absolute index of the block separator within `data`, starting from `offset`,
 /// and returns the index immediately following the separator.
@@ -33,7 +37,13 @@ fn find_next_block_start(data: &[u8], finders: &Finders, offset: usize) -> Optio
     }
 }
 
-fn parse_unity_doc(data: &[u8], finders: &Finders) -> anyhow::Result<()> {
+fn handle_prefab(data: &[u8]) {}
+
+fn handle_generic(data: &[u8]) {
+    // let generic_fields = &["m_Name"];
+}
+
+pub fn parse_unity_doc(data: &[u8], finders: &Finders) -> anyhow::Result<()> {
     let mut offset = 0;
     while offset < data.len() {
         let block_start: usize = match find_next_block_start(&data, &finders, offset) {
@@ -44,9 +54,14 @@ fn parse_unity_doc(data: &[u8], finders: &Finders) -> anyhow::Result<()> {
         let (class_id, local_id, body_start) = parse_header(data, block_start, &finders)?;
         let body_end = find_next_block(&data, body_start, &finders);
 
+        println!("Parsing: class_id: {}, local_id: {}, body_start: {}", class_id, local_id, body_start);
+
         match class_id {
             UC_PREFAB_INSTANCE => {
                 handle_prefab(&data[body_start..body_end]);
+            }
+            UC_GAME_OBJECT => {
+                handle_game_object(&data[body_start..body_end]);
             }
             _ => {
                 handle_generic(&data[body_start..body_end]);

@@ -88,19 +88,6 @@ fn parse_name<'a>(
         .trim()
 }
 
-fn parse_obj_game_object<'a>(
-    data: &'a [u8],
-    block_start: usize,
-    block_end: usize,
-    finders: &Finders,
-) -> unity_data::UnityObjGameObject {
-    let mut obj = unity_data::UnityObjGameObject::default();
-
-    // Get the specific slice for this block
-    let block_data = &data[block_start..block_end];
-    let content = std::str::from_utf8(block_data).unwrap_or("");
-}
-
 /// Returns the absolute byte of the next separator "--- !u!" block after `from`,
 /// or `data.len()` if there are no more blocks.
 fn find_next_block(data: &[u8], from: usize, finders: &Finders) -> usize {
@@ -114,14 +101,12 @@ fn find_next_block(data: &[u8], from: usize, finders: &Finders) -> usize {
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("No path provided");
 
-    let mut result = unity_data::SceneResult::default();
     let file = std::fs::File::open(path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
-    let finders = Finders::new();
 
     let data: &[u8] = &mmap;
-    let mut offset = 0;
-    let mut objects = Vec::new();
+    let finders = Finders::new();
+    block_mapper::parse_unity_doc(&data, &finders)?;
 
     Ok(())
 }
