@@ -94,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
     info!("unity-rzv daemon listening on {addr}");
 
     Server::builder()
-        .add_service(UnityDaemonServer::new(service::DaemonService))
+        .add_service(UnityDaemonServer::new(service::DaemonService::new()))
         .serve(addr)
         .await?;
 
