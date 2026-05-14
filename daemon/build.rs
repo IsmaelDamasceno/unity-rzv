@@ -1,3 +1,3 @@
 fn main() {
-    prost_build::compile_protos(&["../proto-schema/schema.proto"], &["../proto-schema/"]).unwrap();
+    tonic_build::compile_protos("../proto-schema/schema.proto").unwrap();
 }

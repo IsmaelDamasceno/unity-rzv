@@ -4,13 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-memmap2 = "0.9"
-# Protobuf serialization
-prost = "0.12"
-# easy error handling
-anyhow = "1.0"
-memchr = "2.8.0"
+memmap2      = "0.9"
+prost        = "0.12"
+anyhow       = "1.0"
+memchr       = "2.8.0"
 aho-corasick = "1.1.4"
+tonic        = "0.11"
+tokio        = { version = "1", features = ["full"] }
+rusqlite     = { version = "0.31", features = ["bundled"] }
+walkdir      = "2"
+tokio-stream = "0.1"
+tracing                 = "0.1"
+tracing-subscriber      = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
-prost-build = "0.12" # Compiles .proto files to Rust code
+tonic-build = "0.11"
