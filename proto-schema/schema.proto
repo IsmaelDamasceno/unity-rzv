@@ -1,23 +1,29 @@
 syntax = "proto3";
 package unity_tool;
 
-message UnityObjComponent {
-    int32 gui_id = 1;
-    string local_id = 2;
-    string class_id = 3;
+// ── Indexing ──────────────────────────────────────────────────────────────────
+
+message IndexProjectRequest {
+    string assets_path = 1;
+    string db_path     = 2;
 }
 
-message UnityObjGameObject {
-    string local_id = 2;
-    string class_id = 3;
-    string name = 5;
-    string tag = 6;
-    int32 layer = 7;
-    bool isActive = 8;
-    repeated UnityObjComponent components = 9;
+message ReIndexRequest {
+    string assets_path = 1;
+    string db_path     = 2;
 }
 
-message SceneResult {
-    repeated UnityObjGameObject objects = 1;
-    int32 total_count = 2;
+message IndexProjectResponse {
+    uint32          assets_indexed  = 1;
+    uint32          objects_indexed = 2;
+    repeated string errors          = 3;
+}
+
+// ── Service ───────────────────────────────────────────────────────────────────
+
+service UnityDaemon {
+    // Index a Unity project from scratch (clears existing data for the project).
+    rpc IndexProject(IndexProjectRequest) returns (IndexProjectResponse);
+    // Re-index — same as IndexProject, kept as a semantic alias for callers.
+    rpc ReIndex(ReIndexRequest)           returns (IndexProjectResponse);
 }
