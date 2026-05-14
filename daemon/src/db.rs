@@ -273,3 +273,264 @@ pub fn mark_asset_indexed(conn: &Connection, asset_id: i64, indexed_ms: i64) -> 
     )?;
     Ok(())
 }
+
+// ── Query result types ────────────────────────────────────────────────────────
+
+pub struct AssetRow {
+    pub path:       String,
+    pub guid:       Option<String>,
+    pub asset_type: String,
+}
+
+pub struct HierarchyRow {
+    pub local_id:      String,
+    pub name:          String,
+    pub depth:         i32,
+    pub sibling_index: i32,
+    pub ancestry_path: String,
+}
+
+pub struct GameObjectMatchRow {
+    pub scene_path:    String,
+    pub name:          String,
+    pub local_id:      String,
+    pub ancestry_path: Option<String>,
+    pub script_path:   Option<String>,
+}
+
+pub struct FieldMatchRow {
+    pub scene_path:           String,
+    pub game_object_name:     String,
+    pub game_object_local_id: String,
+    pub script_path:          Option<String>,
+    pub field_key:            String,
+    pub field_value:          String,
+}
+
+pub struct FieldReferenceMatchRow {
+    pub scene_path:           String,
+    pub game_object_name:     String,
+    pub game_object_local_id: String,
+    pub script_path:          Option<String>,
+    pub field_key:            String,
+}
+
+pub struct GameObjectDetailRow {
+    pub name:      String,
+    pub tag:       String,
+    pub layer:     i64,
+    pub is_active: bool,
+}
+
+pub struct ComponentDetailRow {
+    pub local_id:    String,
+    pub class_id:    String,
+    pub script_path: Option<String>,
+}
+
+// ── Query functions ───────────────────────────────────────────────────────────
+
+pub fn list_assets(conn: &Connection, asset_type_filter: &str, path_filter: &str) -> Result<Vec<AssetRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, guid, asset_type FROM assets
+         WHERE (?1 = '' OR asset_type = ?1)
+           AND (?2 = '' OR path LIKE '%' || ?2 || '%')
+         ORDER BY path",
+    )?;
+    let rows = stmt.query_map(params![asset_type_filter, path_filter], |row| {
+        Ok(AssetRow { path: row.get(0)?, guid: row.get(1)?, asset_type: row.get(2)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn get_scene_hierarchy(conn: &Connection, scene_filter: &str, max_depth: i32) -> Result<Vec<HierarchyRow>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE hierarchy(object_id, local_id, name, parent_id, sibling_index, depth, ancestry_path) AS (
+             SELECT t.object_id, o.local_id, go.name, t.parent_id, t.sibling_index, 0, go.name
+             FROM transforms t
+             JOIN objects o       ON o.id = t.object_id
+             JOIN assets a        ON a.id = o.asset_id
+             JOIN game_objects go ON go.object_id = t.game_object_id
+             WHERE t.parent_id IS NULL
+               AND (?1 = '' OR a.path LIKE '%' || ?1 || '%')
+             UNION ALL
+             SELECT t.object_id, o.local_id, go.name, t.parent_id, t.sibling_index,
+                    h.depth + 1, h.ancestry_path || ' > ' || go.name
+             FROM transforms t
+             JOIN hierarchy h     ON h.object_id = t.parent_id
+             JOIN objects o       ON o.id = t.object_id
+             JOIN game_objects go ON go.object_id = t.game_object_id
+             WHERE (?2 = 0 OR h.depth + 1 < ?2)
+         )
+         SELECT local_id, name, depth, sibling_index, ancestry_path
+         FROM hierarchy
+         ORDER BY ancestry_path",
+    )?;
+    let rows = stmt.query_map(params![scene_filter, max_depth], |row| {
+        Ok(HierarchyRow {
+            local_id:      row.get(0)?,
+            name:          row.get(1)?,
+            depth:         row.get(2)?,
+            sibling_index: row.get(3)?,
+            ancestry_path: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn find_by_component(conn: &Connection, script_name: &str, scene_filter: &str) -> Result<Vec<GameObjectMatchRow>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE ancestry(object_id, ancestry_path) AS (
+             SELECT t.object_id, go.name
+             FROM transforms t
+             JOIN game_objects go ON go.object_id = t.game_object_id
+             WHERE t.parent_id IS NULL
+             UNION ALL
+             SELECT t.object_id, anc.ancestry_path || ' > ' || go.name
+             FROM transforms t
+             JOIN ancestry anc    ON anc.object_id = t.parent_id
+             JOIN game_objects go ON go.object_id = t.game_object_id
+         )
+         SELECT a.path, go.name, o_go.local_id, anc.ancestry_path, script_asset.path
+         FROM asset_references ar
+         JOIN assets script_asset        ON script_asset.guid = ar.to_guid
+                                         AND script_asset.path LIKE '%' || ?1 || '%'
+         JOIN game_object_components goc ON goc.component_id = ar.from_object_id
+         JOIN objects o_go               ON o_go.id = goc.game_object_id
+         JOIN game_objects go            ON go.object_id = o_go.id
+         JOIN assets a                   ON a.id = o_go.asset_id
+         LEFT JOIN transforms t_go       ON t_go.game_object_id = o_go.id
+         LEFT JOIN ancestry anc          ON anc.object_id = t_go.object_id
+         WHERE ar.field_path = 'm_Script'
+           AND (?2 = '' OR a.path LIKE '%' || ?2 || '%')",
+    )?;
+    let rows = stmt.query_map(params![script_name, scene_filter], |row| {
+        Ok(GameObjectMatchRow {
+            scene_path:    row.get(0)?,
+            name:          row.get(1)?,
+            local_id:      row.get(2)?,
+            ancestry_path: row.get(3)?,
+            script_path:   row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn find_by_field_value(
+    conn:          &Connection,
+    field_key:     &str,
+    field_value:   &str,
+    script_filter: &str,
+    scene_filter:  &str,
+) -> Result<Vec<FieldMatchRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.path, go.name, o_go.local_id, script_asset.path, f.key, f.value
+         FROM object_fields f
+         JOIN objects o_comp              ON o_comp.id = f.object_id
+         JOIN game_object_components goc  ON goc.component_id = o_comp.id
+         JOIN objects o_go                ON o_go.id = goc.game_object_id
+         JOIN game_objects go             ON go.object_id = o_go.id
+         JOIN assets a                    ON a.id = o_go.asset_id
+         LEFT JOIN asset_references ar_s  ON ar_s.from_object_id = o_comp.id
+                                         AND ar_s.field_path = 'm_Script'
+         LEFT JOIN assets script_asset    ON script_asset.guid = ar_s.to_guid
+         WHERE (?1 = '' OR f.key = ?1)
+           AND (?2 = '' OR f.value LIKE '%' || ?2 || '%')
+           AND (?3 = '' OR script_asset.path LIKE '%' || ?3 || '%')
+           AND (?4 = '' OR a.path LIKE '%' || ?4 || '%')
+           AND a.asset_type = 'scene'",
+    )?;
+    let rows = stmt.query_map(params![field_key, field_value, script_filter, scene_filter], |row| {
+        Ok(FieldMatchRow {
+            scene_path:           row.get(0)?,
+            game_object_name:     row.get(1)?,
+            game_object_local_id: row.get(2)?,
+            script_path:          row.get(3)?,
+            field_key:            row.get(4)?,
+            field_value:          row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn find_by_field_reference(
+    conn:          &Connection,
+    target_script: &str,
+    scene_filter:  &str,
+) -> Result<Vec<FieldReferenceMatchRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.path, go.name, o_go.local_id, script_asset.path, f.key
+         FROM object_fields f
+         JOIN objects o_comp              ON o_comp.id = f.object_id
+         JOIN game_object_components goc  ON goc.component_id = o_comp.id
+         JOIN objects o_go                ON o_go.id = goc.game_object_id
+         JOIN game_objects go             ON go.object_id = o_go.id
+         JOIN assets a                    ON a.id = o_go.asset_id
+         LEFT JOIN asset_references ar_s  ON ar_s.from_object_id = o_comp.id
+                                         AND ar_s.field_path = 'm_Script'
+         LEFT JOIN assets script_asset    ON script_asset.guid = ar_s.to_guid
+         WHERE f.value IN (
+             SELECT '{fileID: ' || o.local_id || '}'
+             FROM asset_references ar
+             JOIN assets target ON target.guid = ar.to_guid
+                               AND target.path LIKE '%' || ?1 || '%'
+             JOIN objects o ON o.id = ar.from_object_id
+             WHERE ar.field_path = 'm_Script'
+         )
+           AND (?2 = '' OR a.path LIKE '%' || ?2 || '%')
+           AND a.asset_type = 'scene'",
+    )?;
+    let rows = stmt.query_map(params![target_script, scene_filter], |row| {
+        Ok(FieldReferenceMatchRow {
+            scene_path:           row.get(0)?,
+            game_object_name:     row.get(1)?,
+            game_object_local_id: row.get(2)?,
+            script_path:          row.get(3)?,
+            field_key:            row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn get_game_object(conn: &Connection, scene_path: &str, local_id: &str) -> Result<Option<GameObjectDetailRow>> {
+    let result = conn.query_row(
+        "SELECT go.name, go.tag, go.layer, go.is_active
+         FROM game_objects go
+         JOIN objects o ON o.id = go.object_id
+         JOIN assets a  ON a.id = o.asset_id
+         WHERE o.local_id = ?1
+           AND (?2 = '' OR a.path LIKE '%' || ?2 || '%')",
+        params![local_id, scene_path],
+        |row| Ok(GameObjectDetailRow {
+            name:      row.get(0)?,
+            tag:       row.get(1)?,
+            layer:     row.get(2)?,
+            is_active: row.get::<_, i64>(3)? != 0,
+        }),
+    );
+    match result {
+        Ok(row)                                  => Ok(Some(row)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e)                                   => Err(e.into()),
+    }
+}
+
+pub fn get_game_object_components(conn: &Connection, scene_path: &str, local_id: &str) -> Result<Vec<ComponentDetailRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT o_comp.local_id, CAST(o_comp.class_id AS TEXT), script_asset.path
+         FROM game_object_components goc
+         JOIN objects o_go        ON o_go.id = goc.game_object_id
+         JOIN assets a            ON a.id = o_go.asset_id
+         JOIN objects o_comp      ON o_comp.id = goc.component_id
+         LEFT JOIN asset_references ar ON ar.from_object_id = o_comp.id
+                                     AND ar.field_path = 'm_Script'
+         LEFT JOIN assets script_asset ON script_asset.guid = ar.to_guid
+         WHERE o_go.local_id = ?1
+           AND (?2 = '' OR a.path LIKE '%' || ?2 || '%')
+         ORDER BY goc.order_index",
+    )?;
+    let rows = stmt.query_map(params![local_id, scene_path], |row| {
+        Ok(ComponentDetailRow { local_id: row.get(0)?, class_id: row.get(1)?, script_path: row.get(2)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}

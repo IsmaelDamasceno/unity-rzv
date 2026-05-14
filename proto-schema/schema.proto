@@ -19,11 +19,128 @@ message IndexProjectResponse {
     repeated string errors          = 3;
 }
 
+// ── Query messages ────────────────────────────────────────────────────────────
+
+message ListAssetsRequest {
+    string db_path     = 1;
+    string asset_type  = 2; // optional: scene | prefab | asset | script
+    string path_filter = 3; // optional substring
+}
+
+message AssetInfo {
+    string path       = 1;
+    string guid       = 2;
+    string asset_type = 3;
+}
+
+message ListAssetsResponse {
+    repeated AssetInfo assets = 1;
+}
+
+message GetSceneHierarchyRequest {
+    string db_path    = 1;
+    string scene_path = 2; // substring match
+    int32  max_depth  = 3; // 0 = unlimited
+}
+
+message HierarchyNode {
+    string local_id      = 1;
+    string name          = 2;
+    int32  depth         = 3;
+    int32  sibling_index = 4;
+    string ancestry_path = 5; // "Root > Parent > Child"
+}
+
+message GetSceneHierarchyResponse {
+    repeated HierarchyNode nodes = 1;
+}
+
+message FindByComponentRequest {
+    string db_path      = 1;
+    string script_name  = 2; // substring match on script asset path
+    string scene_filter = 3; // optional substring match on scene path
+}
+
+message GameObjectMatch {
+    string scene_path    = 1;
+    string name          = 2;
+    string local_id      = 3;
+    string ancestry_path = 4; // "Root > Parent > GameObject"
+    string script_path   = 5;
+}
+
+message FindByComponentResponse {
+    repeated GameObjectMatch matches = 1;
+}
+
+message FindByFieldValueRequest {
+    string db_path        = 1;
+    string field_key      = 2; // exact key, supports dot notation e.g. m_Tags.0
+    string field_value    = 3; // substring match
+    string script_filter  = 4; // optional: filter by component script name
+    string scene_filter   = 5; // optional: filter by scene path
+}
+
+message FieldMatch {
+    string scene_path           = 1;
+    string game_object_name     = 2;
+    string game_object_local_id = 3;
+    string script_path          = 4;
+    string field_key            = 5;
+    string field_value          = 6;
+}
+
+message FindByFieldValueResponse {
+    repeated FieldMatch matches = 1;
+}
+
+message FindByFieldReferenceRequest {
+    string db_path       = 1;
+    string target_script = 2; // substring match on referenced script asset path
+    string scene_filter  = 3; // optional
+}
+
+message FieldReferenceMatch {
+    string scene_path           = 1;
+    string game_object_name     = 2;
+    string game_object_local_id = 3;
+    string script_path          = 4;
+    string field_key            = 5;
+}
+
+message FindByFieldReferenceResponse {
+    repeated FieldReferenceMatch matches = 1;
+}
+
+message GetGameObjectRequest {
+    string db_path    = 1;
+    string scene_path = 2;
+    string local_id   = 3;
+}
+
+message ComponentDetail {
+    string local_id    = 1;
+    string class_id    = 2;
+    string script_path = 3;
+}
+
+message GetGameObjectResponse {
+    string                   name       = 1;
+    string                   tag        = 2;
+    int32                    layer      = 3;
+    bool                     is_active  = 4;
+    repeated ComponentDetail components = 5;
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 service UnityDaemon {
-    // Index a Unity project from scratch (clears existing data for the project).
-    rpc IndexProject(IndexProjectRequest) returns (IndexProjectResponse);
-    // Re-index — same as IndexProject, kept as a semantic alias for callers.
-    rpc ReIndex(ReIndexRequest)           returns (IndexProjectResponse);
+    rpc IndexProject         (IndexProjectRequest)         returns (IndexProjectResponse);
+    rpc ReIndex              (ReIndexRequest)              returns (IndexProjectResponse);
+    rpc ListAssets           (ListAssetsRequest)           returns (ListAssetsResponse);
+    rpc GetSceneHierarchy    (GetSceneHierarchyRequest)    returns (GetSceneHierarchyResponse);
+    rpc FindByComponent      (FindByComponentRequest)      returns (FindByComponentResponse);
+    rpc FindByFieldValue     (FindByFieldValueRequest)     returns (FindByFieldValueResponse);
+    rpc FindByFieldReference (FindByFieldReferenceRequest) returns (FindByFieldReferenceResponse);
+    rpc GetGameObject        (GetGameObjectRequest)        returns (GetGameObjectResponse);
 }

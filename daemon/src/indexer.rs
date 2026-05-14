@@ -85,6 +85,7 @@ fn index_file(
         let t = Instant::now();
         let tx = conn.transaction()?;
         let asset_id = db::upsert_asset(&tx, path, guid, asset_type, modified_ms)?;
+        db::delete_asset_objects(&tx, asset_id)?;
         db::mark_asset_indexed(&tx, asset_id, modified_ms)?;
         tx.commit()?;
         debug!(path, db_ms = t.elapsed().as_millis(), "script recorded");
@@ -105,6 +106,7 @@ fn index_file(
     let t = Instant::now();
     let tx = conn.transaction()?;
     let asset_id = db::upsert_asset(&tx, path, guid, asset_type, modified_ms)?;
+    db::delete_asset_objects(&tx, asset_id)?;
     insert_blocks(&tx, asset_id, &blocks)?;
     db::mark_asset_indexed(&tx, asset_id, modified_ms)?;
     tx.commit()?;
