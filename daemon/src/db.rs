@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
-use std::path::Path;
+use rusqlite::{Connection, params};
+use std::{collections::HashMap, path::Path};
 use tracing::trace;
 
-use crate::types::{ParsedAddition, ParsedAssetRef, ParsedGameObject, ParsedPropertyOverride, ParsedRemoval, ParsedTransform};
+use crate::types::{
+    ParsedAddition, ParsedAssetRef, ParsedGameObject, ParsedPropertyOverride, ParsedRemoval,
+    ParsedTransform,
+};
 
 pub fn open(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path).context("failed to open database")?;
@@ -39,26 +42,15 @@ pub fn upsert_asset(
            last_modified_ms = excluded.last_modified_ms",
         params![path, guid, asset_type, modified_ms],
     )?;
-    let id: i64 = conn.query_row(
-        "SELECT id FROM assets WHERE path = ?1",
-        params![path],
-        |row| row.get(0),
-    )?;
+    let id: i64 = conn.query_row("SELECT id FROM assets WHERE path = ?1", [path], |row| {
+        row.get(0)
+    })?;
     Ok(id)
 }
 
-pub fn needs_reindex(conn: &Connection, path: &str, modified_ms: i64) -> Result<bool> {
-    trace!(path, modified_ms, "needs_reindex");
-    let result: rusqlite::Result<i64> = conn.query_row(
-        "SELECT last_modified_ms FROM assets WHERE path = ?1",
-        params![path],
-        |row| row.get(0),
-    );
-    match result {
-        Ok(stored) => Ok(stored != modified_ms),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(true),
-        Err(e) => Err(e.into()),
-    }
+pub fn delete_asset(conn: &Connection, asset_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
+    Ok(())
 }
 
 pub fn delete_asset_objects(conn: &Connection, asset_id: i64) -> Result<()> {
@@ -87,23 +79,27 @@ pub fn update_object_prefab_membership(
     source_file_id: &str,
     source_guid: &str,
 ) -> Result<()> {
-    trace!(object_id, prefab_instance_db_id, source_file_id, source_guid, "update_object_prefab_membership");
+    trace!(
+        object_id,
+        prefab_instance_db_id, source_file_id, source_guid, "update_object_prefab_membership"
+    );
     conn.execute(
         "UPDATE objects
          SET prefab_instance_id    = ?1,
              prefab_source_file_id = ?2,
              prefab_source_guid    = ?3
          WHERE id = ?4",
-        params![prefab_instance_db_id, source_file_id, source_guid, object_id],
+        params![
+            prefab_instance_db_id,
+            source_file_id,
+            source_guid,
+            object_id
+        ],
     )?;
     Ok(())
 }
 
-pub fn insert_game_object(
-    conn: &Connection,
-    object_id: i64,
-    go: &ParsedGameObject,
-) -> Result<()> {
+pub fn insert_game_object(conn: &Connection, object_id: i64, go: &ParsedGameObject) -> Result<()> {
     trace!(object_id, name = go.name.as_str(), "insert_game_object");
     conn.execute(
         "INSERT INTO game_objects (object_id, name, tag, layer, is_active)
@@ -145,10 +141,20 @@ pub fn insert_transform(
           scale_x, scale_y, scale_z)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
         params![
-            object_id, go_db_id, parent_db_id, t.root_order,
-            t.pos_x, t.pos_y, t.pos_z,
-            t.rot_x, t.rot_y, t.rot_z, t.rot_w,
-            t.scale_x, t.scale_y, t.scale_z
+            object_id,
+            go_db_id,
+            parent_db_id,
+            t.root_order,
+            t.pos_x,
+            t.pos_y,
+            t.pos_z,
+            t.rot_x,
+            t.rot_y,
+            t.rot_z,
+            t.rot_w,
+            t.scale_x,
+            t.scale_y,
+            t.scale_z
         ],
     )?;
     Ok(())
@@ -160,7 +166,10 @@ pub fn insert_prefab_instance(
     source_prefab_guid: Option<&str>,
     transform_parent_db_id: Option<i64>,
 ) -> Result<()> {
-    trace!(object_id, source_prefab_guid, transform_parent_db_id, "insert_prefab_instance");
+    trace!(
+        object_id,
+        source_prefab_guid, transform_parent_db_id, "insert_prefab_instance"
+    );
     conn.execute(
         "INSERT INTO prefab_instances (object_id, source_prefab_guid, transform_parent_id)
          VALUES (?1, ?2, ?3)",
@@ -174,7 +183,11 @@ pub fn insert_property_override(
     instance_id: i64,
     ov: &ParsedPropertyOverride,
 ) -> Result<()> {
-    trace!(instance_id, property_path = ov.property_path.as_str(), "insert_property_override");
+    trace!(
+        instance_id,
+        property_path = ov.property_path.as_str(),
+        "insert_property_override"
+    );
     conn.execute(
         "INSERT INTO prefab_property_overrides
          (instance_id, target_file_id, target_guid, property_path,
@@ -193,12 +206,13 @@ pub fn insert_property_override(
     Ok(())
 }
 
-pub fn insert_prefab_removal(
-    conn: &Connection,
-    instance_id: i64,
-    r: &ParsedRemoval,
-) -> Result<()> {
-    trace!(instance_id, target_file_id = r.target_file_id.as_str(), removal_type = r.removal_type.as_str(), "insert_prefab_removal");
+pub fn insert_prefab_removal(conn: &Connection, instance_id: i64, r: &ParsedRemoval) -> Result<()> {
+    trace!(
+        instance_id,
+        target_file_id = r.target_file_id.as_str(),
+        removal_type = r.removal_type.as_str(),
+        "insert_prefab_removal"
+    );
     conn.execute(
         "INSERT OR IGNORE INTO prefab_removals
          (instance_id, target_file_id, target_guid, removal_type)
@@ -214,7 +228,12 @@ pub fn insert_prefab_addition(
     a: &ParsedAddition,
     added_db_id: i64,
 ) -> Result<()> {
-    trace!(instance_id, added_db_id, addition_type = a.addition_type.as_str(), "insert_prefab_addition");
+    trace!(
+        instance_id,
+        added_db_id,
+        addition_type = a.addition_type.as_str(),
+        "insert_prefab_addition"
+    );
     conn.execute(
         "INSERT INTO prefab_additions
          (instance_id, added_object_id, addition_type, parent_file_id, parent_guid)
@@ -249,7 +268,12 @@ pub fn insert_asset_reference(
     from_object_id: i64,
     ar: &ParsedAssetRef,
 ) -> Result<()> {
-    trace!(from_object_id, field_path = ar.field_path.as_str(), to_guid = ar.to_guid.as_str(), "insert_asset_reference");
+    trace!(
+        from_object_id,
+        field_path = ar.field_path.as_str(),
+        to_guid = ar.to_guid.as_str(),
+        "insert_asset_reference"
+    );
     conn.execute(
         "INSERT OR REPLACE INTO asset_references
          (from_object_id, field_path, to_guid, to_file_id, ref_type)
@@ -276,61 +300,93 @@ pub fn mark_asset_indexed(conn: &Connection, asset_id: i64, indexed_ms: i64) -> 
 
 // ── Query result types ────────────────────────────────────────────────────────
 
+pub struct AssetTimestampData {
+    pub id: i64,
+    pub timestamp: i64,
+}
+
 pub struct AssetRow {
-    pub path:       String,
-    pub guid:       Option<String>,
+    pub path: String,
+    pub guid: Option<String>,
     pub asset_type: String,
 }
 
 pub struct HierarchyRow {
-    pub local_id:      String,
-    pub name:          String,
-    pub depth:         i32,
+    pub local_id: String,
+    pub name: String,
+    pub depth: i32,
     pub sibling_index: i32,
     pub ancestry_path: String,
 }
 
 pub struct GameObjectMatchRow {
-    pub scene_path:    String,
-    pub name:          String,
-    pub local_id:      String,
+    pub scene_path: String,
+    pub name: String,
+    pub local_id: String,
     pub ancestry_path: Option<String>,
-    pub script_path:   Option<String>,
+    pub script_path: Option<String>,
 }
 
 pub struct FieldMatchRow {
-    pub scene_path:           String,
-    pub game_object_name:     String,
+    pub scene_path: String,
+    pub game_object_name: String,
     pub game_object_local_id: String,
-    pub script_path:          Option<String>,
-    pub field_key:            String,
-    pub field_value:          String,
+    pub script_path: Option<String>,
+    pub field_key: String,
+    pub field_value: String,
 }
 
 pub struct FieldReferenceMatchRow {
-    pub scene_path:           String,
-    pub game_object_name:     String,
+    pub scene_path: String,
+    pub game_object_name: String,
     pub game_object_local_id: String,
-    pub script_path:          Option<String>,
-    pub field_key:            String,
+    pub script_path: Option<String>,
+    pub field_key: String,
 }
 
 pub struct GameObjectDetailRow {
-    pub name:      String,
-    pub tag:       String,
-    pub layer:     i64,
+    pub name: String,
+    pub tag: String,
+    pub layer: i64,
     pub is_active: bool,
 }
 
 pub struct ComponentDetailRow {
-    pub local_id:    String,
-    pub class_id:    String,
+    pub local_id: String,
+    pub class_id: String,
     pub script_path: Option<String>,
 }
 
 // ── Query functions ───────────────────────────────────────────────────────────
 
-pub fn list_assets(conn: &Connection, asset_type_filter: &str, path_filter: &str) -> Result<Vec<AssetRow>> {
+pub fn list_asset_timestamps(conn: &Connection) -> Result<HashMap<String, AssetTimestampData>> {
+    trace!("load_asset_timestamps");
+
+    let mut stmt = conn.prepare("SELECT path, id, last_modified_ms FROM assets")?;
+
+    let mut map = HashMap::new();
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            AssetTimestampData {
+                id: row.get::<_, i64>(1)?,
+                timestamp: row.get::<_, i64>(2)?,
+            },
+        ))
+    })?;
+
+    for row in rows {
+        let (path, data) = row?;
+        map.insert(path, data);
+    }
+    Ok(map)
+}
+
+pub fn list_assets(
+    conn: &Connection,
+    asset_type_filter: &str,
+    path_filter: &str,
+) -> Result<Vec<AssetRow>> {
     let mut stmt = conn.prepare(
         "SELECT path, guid, asset_type FROM assets
          WHERE (?1 = '' OR asset_type = ?1)
@@ -338,12 +394,21 @@ pub fn list_assets(conn: &Connection, asset_type_filter: &str, path_filter: &str
          ORDER BY path",
     )?;
     let rows = stmt.query_map(params![asset_type_filter, path_filter], |row| {
-        Ok(AssetRow { path: row.get(0)?, guid: row.get(1)?, asset_type: row.get(2)? })
+        Ok(AssetRow {
+            path: row.get(0)?,
+            guid: row.get(1)?,
+            asset_type: row.get(2)?,
+        })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
-pub fn get_scene_hierarchy(conn: &Connection, scene_filter: &str, max_depth: i32) -> Result<Vec<HierarchyRow>> {
+pub fn get_scene_hierarchy(
+    conn: &Connection,
+    scene_filter: &str,
+    max_depth: i32,
+) -> Result<Vec<HierarchyRow>> {
     let mut stmt = conn.prepare(
         "WITH RECURSIVE hierarchy(object_id, local_id, name, parent_id, sibling_index, depth, ancestry_path) AS (
              SELECT t.object_id, o.local_id, go.name, t.parent_id, t.sibling_index, 0, go.name
@@ -368,17 +433,22 @@ pub fn get_scene_hierarchy(conn: &Connection, scene_filter: &str, max_depth: i32
     )?;
     let rows = stmt.query_map(params![scene_filter, max_depth], |row| {
         Ok(HierarchyRow {
-            local_id:      row.get(0)?,
-            name:          row.get(1)?,
-            depth:         row.get(2)?,
+            local_id: row.get(0)?,
+            name: row.get(1)?,
+            depth: row.get(2)?,
             sibling_index: row.get(3)?,
             ancestry_path: row.get(4)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
-pub fn find_by_component(conn: &Connection, script_name: &str, scene_filter: &str) -> Result<Vec<GameObjectMatchRow>> {
+pub fn find_by_component(
+    conn: &Connection,
+    script_name: &str,
+    scene_filter: &str,
+) -> Result<Vec<GameObjectMatchRow>> {
     let mut stmt = conn.prepare(
         "WITH RECURSIVE ancestry(object_id, ancestry_path) AS (
              SELECT t.object_id, go.name
@@ -406,22 +476,23 @@ pub fn find_by_component(conn: &Connection, script_name: &str, scene_filter: &st
     )?;
     let rows = stmt.query_map(params![script_name, scene_filter], |row| {
         Ok(GameObjectMatchRow {
-            scene_path:    row.get(0)?,
-            name:          row.get(1)?,
-            local_id:      row.get(2)?,
+            scene_path: row.get(0)?,
+            name: row.get(1)?,
+            local_id: row.get(2)?,
             ancestry_path: row.get(3)?,
-            script_path:   row.get(4)?,
+            script_path: row.get(4)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn find_by_field_value(
-    conn:          &Connection,
-    field_key:     &str,
-    field_value:   &str,
+    conn: &Connection,
+    field_key: &str,
+    field_value: &str,
     script_filter: &str,
-    scene_filter:  &str,
+    scene_filter: &str,
 ) -> Result<Vec<FieldMatchRow>> {
     let mut stmt = conn.prepare(
         "SELECT a.path, go.name, o_go.local_id, script_asset.path, f.key, f.value
@@ -440,23 +511,27 @@ pub fn find_by_field_value(
            AND (?4 = '' OR a.path LIKE '%' || ?4 || '%')
            AND a.asset_type = 'scene'",
     )?;
-    let rows = stmt.query_map(params![field_key, field_value, script_filter, scene_filter], |row| {
-        Ok(FieldMatchRow {
-            scene_path:           row.get(0)?,
-            game_object_name:     row.get(1)?,
-            game_object_local_id: row.get(2)?,
-            script_path:          row.get(3)?,
-            field_key:            row.get(4)?,
-            field_value:          row.get(5)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    let rows = stmt.query_map(
+        params![field_key, field_value, script_filter, scene_filter],
+        |row| {
+            Ok(FieldMatchRow {
+                scene_path: row.get(0)?,
+                game_object_name: row.get(1)?,
+                game_object_local_id: row.get(2)?,
+                script_path: row.get(3)?,
+                field_key: row.get(4)?,
+                field_value: row.get(5)?,
+            })
+        },
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 pub fn find_by_field_reference(
-    conn:          &Connection,
+    conn: &Connection,
     target_script: &str,
-    scene_filter:  &str,
+    scene_filter: &str,
 ) -> Result<Vec<FieldReferenceMatchRow>> {
     let mut stmt = conn.prepare(
         "SELECT a.path, go.name, o_go.local_id, script_asset.path, f.key
@@ -482,17 +557,22 @@ pub fn find_by_field_reference(
     )?;
     let rows = stmt.query_map(params![target_script, scene_filter], |row| {
         Ok(FieldReferenceMatchRow {
-            scene_path:           row.get(0)?,
-            game_object_name:     row.get(1)?,
+            scene_path: row.get(0)?,
+            game_object_name: row.get(1)?,
             game_object_local_id: row.get(2)?,
-            script_path:          row.get(3)?,
-            field_key:            row.get(4)?,
+            script_path: row.get(3)?,
+            field_key: row.get(4)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
-pub fn get_game_object(conn: &Connection, scene_path: &str, local_id: &str) -> Result<Option<GameObjectDetailRow>> {
+pub fn get_game_object(
+    conn: &Connection,
+    scene_path: &str,
+    local_id: &str,
+) -> Result<Option<GameObjectDetailRow>> {
     let result = conn.query_row(
         "SELECT go.name, go.tag, go.layer, go.is_active
          FROM game_objects go
@@ -501,21 +581,27 @@ pub fn get_game_object(conn: &Connection, scene_path: &str, local_id: &str) -> R
          WHERE o.local_id = ?1
            AND (?2 = '' OR a.path LIKE '%' || ?2 || '%')",
         params![local_id, scene_path],
-        |row| Ok(GameObjectDetailRow {
-            name:      row.get(0)?,
-            tag:       row.get(1)?,
-            layer:     row.get(2)?,
-            is_active: row.get::<_, i64>(3)? != 0,
-        }),
+        |row| {
+            Ok(GameObjectDetailRow {
+                name: row.get(0)?,
+                tag: row.get(1)?,
+                layer: row.get(2)?,
+                is_active: row.get::<_, i64>(3)? != 0,
+            })
+        },
     );
     match result {
-        Ok(row)                                  => Ok(Some(row)),
+        Ok(row) => Ok(Some(row)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e)                                   => Err(e.into()),
+        Err(e) => Err(e.into()),
     }
 }
 
-pub fn get_game_object_components(conn: &Connection, scene_path: &str, local_id: &str) -> Result<Vec<ComponentDetailRow>> {
+pub fn get_game_object_components(
+    conn: &Connection,
+    scene_path: &str,
+    local_id: &str,
+) -> Result<Vec<ComponentDetailRow>> {
     let mut stmt = conn.prepare(
         "SELECT o_comp.local_id, CAST(o_comp.class_id AS TEXT), script_asset.path
          FROM game_object_components goc
@@ -530,7 +616,12 @@ pub fn get_game_object_components(conn: &Connection, scene_path: &str, local_id:
          ORDER BY goc.order_index",
     )?;
     let rows = stmt.query_map(params![local_id, scene_path], |row| {
-        Ok(ComponentDetailRow { local_id: row.get(0)?, class_id: row.get(1)?, script_path: row.get(2)? })
+        Ok(ComponentDetailRow {
+            local_id: row.get(0)?,
+            class_id: row.get(1)?,
+            script_path: row.get(2)?,
+        })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::string;
 use std::time::{Instant, SystemTime};
 
 use rusqlite::Connection;
@@ -7,12 +8,13 @@ use tracing::{debug, info, trace, warn};
 use walkdir::WalkDir;
 
 use crate::types::{BlockData, ParsedBlock};
-use crate::{block_mapper, db, Finders};
+use crate::{Finders, block_mapper, db};
 
 #[derive(Debug, Default)]
 pub struct IndexStats {
     pub assets_indexed:  u32,
     pub objects_indexed: u32,
+    pub assets_deleted:  u32,
     pub errors:          Vec<String>,
 }
 
@@ -23,6 +25,7 @@ pub struct IndexStats {
 pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Result<IndexStats> {
     let finders = Finders::new();
     let mut stats = IndexStats::default();
+    let mut timestamps = db::list_asset_timestamps(conn)?;
 
     for entry in WalkDir::new(assets_path)
         .follow_links(false)
@@ -31,20 +34,20 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
         .filter(|e| e.file_type().is_file())
     {
         let path = entry.path();
+        let path_str = path.to_string_lossy().into_owned();
 
         let asset_type = match path.extension().and_then(|e| e.to_str()) {
             Some("unity") => "scene",
             Some("prefab") => "prefab",
-            Some("asset")  => "asset",
-            Some("cs")     => "script",
-            _              => continue,
+            Some("asset") => "asset",
+            Some("cs") => "script",
+            _ => continue,
         };
 
-        // Skip .meta files themselves; we read them as sidecars.
-        let path_str = path.to_string_lossy().into_owned();
+        let timestamp_data = timestamps.remove(&path_str);
         let modified_ms = modified_ms(path).unwrap_or(0);
 
-        if let Ok(false) = db::needs_reindex(conn, &path_str, modified_ms) {
+        if let Some(data) = timestamp_data && data.timestamp == modified_ms {
             trace!(path = path_str.as_str(), "skipping unchanged file");
             continue;
         }
@@ -52,10 +55,17 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
         let guid = read_guid_from_meta(&format!("{path_str}.meta"));
         debug!(path = path_str.as_str(), asset_type, "indexing file");
 
-        match index_file(conn, &path_str, guid.as_deref(), asset_type, modified_ms, &finders) {
+        match index_file(
+            conn,
+            &path_str,
+            guid.as_deref(),
+            asset_type,
+            modified_ms,
+            &finders,
+        ) {
             Ok(count) => {
                 debug!(path = path_str.as_str(), objects = count, "indexed");
-                stats.assets_indexed  += 1;
+                stats.assets_indexed += 1;
                 stats.objects_indexed += count;
             }
             Err(e) => {
@@ -65,18 +75,22 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
         }
     }
 
+    for (_, data) in &timestamps {
+        db::delete_asset(&conn, data.id)?;
+    }
+
     Ok(stats)
 }
 
 // ── Per-file indexing ─────────────────────────────────────────────────────────
 
 fn index_file(
-    conn:        &mut Connection,
-    path:        &str,
-    guid:        Option<&str>,
-    asset_type:  &str,
+    conn: &mut Connection,
+    path: &str,
+    guid: Option<&str>,
+    asset_type: &str,
     modified_ms: i64,
-    finders:     &Finders,
+    finders: &Finders,
 ) -> anyhow::Result<u32> {
     let file_start = Instant::now();
     info!(path, asset_type, "indexing file");
@@ -96,12 +110,22 @@ fn index_file(
     let file = std::fs::File::open(path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let data: &[u8] = &mmap;
-    debug!(path, bytes = data.len(), read_ms = t.elapsed().as_millis(), "file mapped");
+    debug!(
+        path,
+        bytes = data.len(),
+        read_ms = t.elapsed().as_millis(),
+        "file mapped"
+    );
 
     let t = Instant::now();
     let blocks = block_mapper::parse_unity_doc(data, finders)?;
-    let count  = blocks.len() as u32;
-    debug!(path, blocks = count, parse_ms = t.elapsed().as_millis(), "blocks parsed");
+    let count = blocks.len() as u32;
+    debug!(
+        path,
+        blocks = count,
+        parse_ms = t.elapsed().as_millis(),
+        "blocks parsed"
+    );
 
     let t = Instant::now();
     let tx = conn.transaction()?;
@@ -110,9 +134,19 @@ fn index_file(
     insert_blocks(&tx, asset_id, &blocks)?;
     db::mark_asset_indexed(&tx, asset_id, modified_ms)?;
     tx.commit()?;
-    debug!(path, blocks = count, db_ms = t.elapsed().as_millis(), "blocks written to db");
+    debug!(
+        path,
+        blocks = count,
+        db_ms = t.elapsed().as_millis(),
+        "blocks written to db"
+    );
 
-    info!(path, blocks = count, total_ms = file_start.elapsed().as_millis(), "file indexed");
+    info!(
+        path,
+        blocks = count,
+        total_ms = file_start.elapsed().as_millis(),
+        "file indexed"
+    );
     Ok(count)
 }
 
@@ -128,9 +162,9 @@ fn insert_blocks(conn: &Connection, asset_id: i64, blocks: &[ParsedBlock]) -> an
 }
 
 fn insert_objects_pass(
-    conn:     &Connection,
+    conn: &Connection,
     asset_id: i64,
-    blocks:   &[ParsedBlock],
+    blocks: &[ParsedBlock],
 ) -> anyhow::Result<HashMap<String, i64>> {
     let mut id_map = HashMap::with_capacity(blocks.len());
 
@@ -151,12 +185,14 @@ fn insert_objects_pass(
 }
 
 fn insert_type_data_pass(
-    conn:   &Connection,
+    conn: &Connection,
     blocks: &[ParsedBlock],
     id_map: &HashMap<String, i64>,
 ) -> anyhow::Result<()> {
     for block in blocks {
-        let Some(&oid) = id_map.get(&block.local_id) else { continue };
+        let Some(&oid) = id_map.get(&block.local_id) else {
+            continue;
+        };
 
         if let Err(e) = insert_typed(conn, oid, block, id_map) {
             warn!(local_id = block.local_id.as_str(), oid, error = %e, "type insert failed");
@@ -166,9 +202,9 @@ fn insert_type_data_pass(
 }
 
 fn insert_typed(
-    conn:   &Connection,
-    oid:    i64,
-    block:  &ParsedBlock,
+    conn: &Connection,
+    oid: i64,
+    block: &ParsedBlock,
     id_map: &HashMap<String, i64>,
 ) -> anyhow::Result<()> {
     match &block.data {
@@ -182,13 +218,25 @@ fn insert_typed(
         }
 
         BlockData::Transform(t) => {
-            let go_oid     = t.game_object_file_id.as_deref().and_then(|l| id_map.get(l)).copied();
-            let parent_oid = t.parent_file_id.as_deref().and_then(|l| id_map.get(l)).copied();
+            let go_oid = t
+                .game_object_file_id
+                .as_deref()
+                .and_then(|l| id_map.get(l))
+                .copied();
+            let parent_oid = t
+                .parent_file_id
+                .as_deref()
+                .and_then(|l| id_map.get(l))
+                .copied();
             db::insert_transform(conn, oid, go_oid, parent_oid, t)?;
         }
 
         BlockData::PrefabInstance(pi) => {
-            let parent_oid = pi.transform_parent_file_id.as_deref().and_then(|l| id_map.get(l)).copied();
+            let parent_oid = pi
+                .transform_parent_file_id
+                .as_deref()
+                .and_then(|l| id_map.get(l))
+                .copied();
             db::insert_prefab_instance(conn, oid, pi.source_prefab_guid.as_deref(), parent_oid)?;
 
             for ov in &pi.property_overrides {
