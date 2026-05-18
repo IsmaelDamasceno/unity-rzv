@@ -14,7 +14,7 @@ use crate::{Finders, block_mapper, db};
 pub struct IndexStats {
     pub assets_indexed:  u32,
     pub objects_indexed: u32,
-    pub assets_deleted:  u32,
+    pub assets_deleted:  usize,
     pub errors:          Vec<String>,
 }
 
@@ -74,6 +74,8 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
             }
         }
     }
+
+    stats.assets_deleted = timestamps.len();
 
     for (_, data) in &timestamps {
         db::delete_asset(&conn, data.id)?;

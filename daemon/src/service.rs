@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
@@ -8,56 +9,136 @@ use tracing::{info, warn};
 
 use crate::unity_data::unity_daemon_server::UnityDaemon;
 use crate::unity_data::{
-    AssetInfo, ComponentDetail, FieldMatch, FieldReferenceMatch, FindByComponentRequest,
-    FindByComponentResponse, FindByFieldReferenceRequest, FindByFieldReferenceResponse,
-    FindByFieldValueRequest, FindByFieldValueResponse, GameObjectMatch, GetGameObjectRequest,
-    GetGameObjectResponse, GetSceneHierarchyRequest, GetSceneHierarchyResponse, HierarchyNode,
-    IndexProjectRequest, IndexProjectResponse, ListAssetsRequest, ListAssetsResponse,
-    ReIndexRequest,
+    AssetInfo, ComponentDetail, ContainerInfo, CreateContainerRequest, CreateContainerResponse,
+    FieldMatch, FieldReferenceMatch, FindByComponentRequest, FindByComponentResponse,
+    FindByFieldReferenceRequest, FindByFieldReferenceResponse, FindByFieldValueRequest,
+    FindByFieldValueResponse, GameObjectMatch, GetGameObjectRequest, GetGameObjectResponse,
+    GetSceneHierarchyRequest, GetSceneHierarchyResponse, HierarchyNode, IndexProjectRequest,
+    IndexProjectResponse, ListAssetsRequest, ListAssetsResponse, ListContainersRequest,
+    ListContainersResponse, ReIndexRequest, StopContainerRequest, StopContainerResponse,
 };
 use crate::{db, indexer};
 
-// ── Connection cache ──────────────────────────────────────────────────────────
+// ── Container registry ────────────────────────────────────────────────────────
 
-type ConnCache = Arc<Mutex<HashMap<String, Arc<Mutex<Connection>>>>>;
+static CONTAINER_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-fn get_or_open(cache: &ConnCache, db_path: &str) -> Result<Arc<Mutex<Connection>>, String> {
-    let mut map = cache.lock().unwrap();
-    if !map.contains_key(db_path) {
-        let conn = db::open(Path::new(db_path)).map_err(|e| format!("failed to open db: {e}"))?;
-        map.insert(db_path.to_string(), Arc::new(Mutex::new(conn)));
+struct ContainerState {
+    assets_path: String,
+    db_path:     String,
+    conn:        Arc<Mutex<Connection>>,
+}
+
+type Registry = Arc<Mutex<HashMap<String, ContainerState>>>;
+
+fn new_container_id() -> String {
+    format!("c{}", CONTAINER_COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn get_conn(registry: &Registry, container_id: &str) -> Result<Arc<Mutex<Connection>>, Status> {
+    let map = registry.lock().unwrap();
+    match map.get(container_id) {
+        Some(c) => Ok(Arc::clone(&c.conn)),
+        None    => Err(Status::not_found(format!("container '{container_id}' not found"))),
     }
-    Ok(map[db_path].clone())
+}
+
+fn get_conn_and_assets(registry: &Registry, container_id: &str) -> Result<(Arc<Mutex<Connection>>, String), Status> {
+    let map = registry.lock().unwrap();
+    match map.get(container_id) {
+        Some(c) => Ok((Arc::clone(&c.conn), c.assets_path.clone())),
+        None    => Err(Status::not_found(format!("container '{container_id}' not found"))),
+    }
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
 pub struct DaemonService {
-    conn_cache: ConnCache,
+    registry: Registry,
 }
 
 impl DaemonService {
     pub fn new() -> Self {
-        Self { conn_cache: Arc::new(Mutex::new(HashMap::new())) }
+        Self { registry: Arc::new(Mutex::new(HashMap::new())) }
     }
 }
 
 #[tonic::async_trait]
 impl UnityDaemon for DaemonService {
+    async fn create_container(
+        &self,
+        request: Request<CreateContainerRequest>,
+    ) -> Result<Response<CreateContainerResponse>, Status> {
+        let req = request.into_inner();
+        let db_path_clone = req.db_path.clone();
+
+        let conn = tokio::task::spawn_blocking(move || {
+            db::open(Path::new(&db_path_clone)).map_err(|e| format!("failed to open db: {e}"))
+        })
+        .await
+        .map_err(|e| Status::internal(format!("task panicked: {e}")))?
+        .map_err(|e| Status::internal(e))?;
+
+        let container_id = new_container_id();
+        self.registry.lock().unwrap().insert(
+            container_id.clone(),
+            ContainerState {
+                assets_path: req.assets_path,
+                db_path:     req.db_path,
+                conn:        Arc::new(Mutex::new(conn)),
+            },
+        );
+
+        info!(container_id = container_id.as_str(), "container created");
+        Ok(Response::new(CreateContainerResponse { container_id }))
+    }
+
+    async fn list_containers(
+        &self,
+        _request: Request<ListContainersRequest>,
+    ) -> Result<Response<ListContainersResponse>, Status> {
+        let map = self.registry.lock().unwrap();
+        let containers = map
+            .iter()
+            .map(|(id, c)| ContainerInfo {
+                container_id: id.clone(),
+                assets_path:  c.assets_path.clone(),
+                db_path:      c.db_path.clone(),
+            })
+            .collect();
+        Ok(Response::new(ListContainersResponse { containers }))
+    }
+
+    async fn stop_container(
+        &self,
+        request: Request<StopContainerRequest>,
+    ) -> Result<Response<StopContainerResponse>, Status> {
+        let id = request.into_inner().container_id;
+        match self.registry.lock().unwrap().remove(&id) {
+            Some(_) => {
+                info!(container_id = id.as_str(), "container stopped");
+                Ok(Response::new(StopContainerResponse {}))
+            }
+            None => Err(Status::not_found(format!("container '{id}' not found"))),
+        }
+    }
+
     async fn index_project(
         &self,
         request: Request<IndexProjectRequest>,
     ) -> Result<Response<IndexProjectResponse>, Status> {
-        let req = request.into_inner();
-        run_index(Arc::clone(&self.conn_cache), req.assets_path, req.db_path).await
+        let id = request.into_inner().container_id;
+        let (conn_arc, assets_path) = get_conn_and_assets(&self.registry, &id)?;
+        run_index(conn_arc, assets_path).await
     }
 
     async fn re_index(
         &self,
         request: Request<ReIndexRequest>,
     ) -> Result<Response<IndexProjectResponse>, Status> {
-        let req = request.into_inner();
-        run_index(Arc::clone(&self.conn_cache), req.assets_path, req.db_path).await
+        let id = request.into_inner().container_id;
+        let (conn_arc, assets_path) = get_conn_and_assets(&self.registry, &id)?;
+        run_index(conn_arc, assets_path).await
     }
 
     async fn list_assets(
@@ -65,11 +146,10 @@ impl UnityDaemon for DaemonService {
         request: Request<ListAssetsRequest>,
     ) -> Result<Response<ListAssetsResponse>, Status> {
         let req = request.into_inner();
-        info!(db_path = req.db_path.as_str(), asset_type = req.asset_type.as_str(), path_filter = req.path_filter.as_str(), "list_assets");
-        let cache = Arc::clone(&self.conn_cache);
+        info!(container_id = req.container_id.as_str(), asset_type = req.asset_type.as_str(), path_filter = req.path_filter.as_str(), "list_assets");
+        let conn_arc = get_conn(&self.registry, &req.container_id)?;
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn_arc = get_or_open(&cache, &req.db_path)?;
             let conn = conn_arc.lock().unwrap();
             db::list_assets(&conn, &req.asset_type, &req.path_filter).map_err(|e| format!("{e}"))
         })
@@ -96,11 +176,10 @@ impl UnityDaemon for DaemonService {
         request: Request<GetSceneHierarchyRequest>,
     ) -> Result<Response<GetSceneHierarchyResponse>, Status> {
         let req = request.into_inner();
-        info!(db_path = req.db_path.as_str(), scene_path = req.scene_path.as_str(), max_depth = req.max_depth, "get_scene_hierarchy");
-        let cache = Arc::clone(&self.conn_cache);
+        info!(container_id = req.container_id.as_str(), scene_path = req.scene_path.as_str(), max_depth = req.max_depth, "get_scene_hierarchy");
+        let conn_arc = get_conn(&self.registry, &req.container_id)?;
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn_arc = get_or_open(&cache, &req.db_path)?;
             let conn = conn_arc.lock().unwrap();
             db::get_scene_hierarchy(&conn, &req.scene_path, req.max_depth).map_err(|e| format!("{e}"))
         })
@@ -129,11 +208,10 @@ impl UnityDaemon for DaemonService {
         request: Request<FindByComponentRequest>,
     ) -> Result<Response<FindByComponentResponse>, Status> {
         let req = request.into_inner();
-        info!(db_path = req.db_path.as_str(), script_name = req.script_name.as_str(), scene_filter = req.scene_filter.as_str(), "find_by_component");
-        let cache = Arc::clone(&self.conn_cache);
+        info!(container_id = req.container_id.as_str(), script_name = req.script_name.as_str(), scene_filter = req.scene_filter.as_str(), "find_by_component");
+        let conn_arc = get_conn(&self.registry, &req.container_id)?;
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn_arc = get_or_open(&cache, &req.db_path)?;
             let conn = conn_arc.lock().unwrap();
             db::find_by_component(&conn, &req.script_name, &req.scene_filter).map_err(|e| format!("{e}"))
         })
@@ -163,16 +241,15 @@ impl UnityDaemon for DaemonService {
     ) -> Result<Response<FindByFieldValueResponse>, Status> {
         let req = request.into_inner();
         info!(
-            db_path      = req.db_path.as_str(),
+            container_id = req.container_id.as_str(),
             field_key    = req.field_key.as_str(),
             field_value  = req.field_value.as_str(),
             scene_filter = req.scene_filter.as_str(),
             "find_by_field_value"
         );
-        let cache = Arc::clone(&self.conn_cache);
+        let conn_arc = get_conn(&self.registry, &req.container_id)?;
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn_arc = get_or_open(&cache, &req.db_path)?;
             let conn = conn_arc.lock().unwrap();
             db::find_by_field_value(&conn, &req.field_key, &req.field_value, &req.script_filter, &req.scene_filter)
                 .map_err(|e| format!("{e}"))
@@ -203,11 +280,10 @@ impl UnityDaemon for DaemonService {
         request: Request<FindByFieldReferenceRequest>,
     ) -> Result<Response<FindByFieldReferenceResponse>, Status> {
         let req = request.into_inner();
-        info!(db_path = req.db_path.as_str(), target_script = req.target_script.as_str(), scene_filter = req.scene_filter.as_str(), "find_by_field_reference");
-        let cache = Arc::clone(&self.conn_cache);
+        info!(container_id = req.container_id.as_str(), target_script = req.target_script.as_str(), scene_filter = req.scene_filter.as_str(), "find_by_field_reference");
+        let conn_arc = get_conn(&self.registry, &req.container_id)?;
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn_arc = get_or_open(&cache, &req.db_path)?;
             let conn = conn_arc.lock().unwrap();
             db::find_by_field_reference(&conn, &req.target_script, &req.scene_filter)
                 .map_err(|e| format!("{e}"))
@@ -237,11 +313,10 @@ impl UnityDaemon for DaemonService {
         request: Request<GetGameObjectRequest>,
     ) -> Result<Response<GetGameObjectResponse>, Status> {
         let req = request.into_inner();
-        info!(db_path = req.db_path.as_str(), scene_path = req.scene_path.as_str(), local_id = req.local_id.as_str(), "get_game_object");
-        let cache = Arc::clone(&self.conn_cache);
+        info!(container_id = req.container_id.as_str(), scene_path = req.scene_path.as_str(), local_id = req.local_id.as_str(), "get_game_object");
+        let conn_arc = get_conn(&self.registry, &req.container_id)?;
 
         let result = tokio::task::spawn_blocking(move || {
-            let conn_arc = get_or_open(&cache, &req.db_path)?;
             let conn = conn_arc.lock().unwrap();
             let go    = db::get_game_object(&conn, &req.scene_path, &req.local_id).map_err(|e| format!("{e}"))?;
             let comps = db::get_game_object_components(&conn, &req.scene_path, &req.local_id).map_err(|e| format!("{e}"))?;
@@ -274,14 +349,12 @@ impl UnityDaemon for DaemonService {
 // ── Index handler ─────────────────────────────────────────────────────────────
 
 async fn run_index(
-    cache:       ConnCache,
+    conn_arc:    Arc<Mutex<Connection>>,
     assets_path: String,
-    db_path:     String,
 ) -> Result<Response<IndexProjectResponse>, Status> {
-    info!(assets_path, db_path, "index request received");
+    info!(assets_path, "index request received");
 
     let result = tokio::task::spawn_blocking(move || {
-        let conn_arc = get_or_open(&cache, &db_path).map_err(|e| e.to_string())?;
         let mut conn = conn_arc.lock().unwrap();
         indexer::index_project(Path::new(&assets_path), &mut conn)
             .map_err(|e| format!("indexing failed: {e}"))
