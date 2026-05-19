@@ -55,3 +55,11 @@ pub fn parse_i64(s: &str) -> i64 {
 pub fn body_to_str(body: &[u8]) -> Option<&str> {
     std::str::from_utf8(body).ok()
 }
+
+pub fn is_numeric(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    value.parse::<f64>().is_ok()
+}
+

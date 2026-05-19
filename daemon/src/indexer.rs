@@ -1,21 +1,21 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::string;
 use std::time::{Instant, SystemTime};
 
 use rusqlite::Connection;
 use tracing::{debug, info, trace, warn};
 use walkdir::WalkDir;
 
+use crate::parse::util;
 use crate::types::{BlockData, ParsedBlock};
 use crate::{Finders, block_mapper, db};
 
 #[derive(Debug, Default)]
 pub struct IndexStats {
-    pub assets_indexed:  u32,
+    pub assets_indexed: u32,
     pub objects_indexed: u32,
-    pub assets_deleted:  usize,
-    pub errors:          Vec<String>,
+    pub assets_deleted: usize,
+    pub errors: Vec<String>,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
         .filter(|e| e.file_type().is_file())
     {
         let path = entry.path();
-        let path_str = path.to_string_lossy().into_owned();
+        let path_str = path.to_string_lossy().replace('\\', "/");
 
         let asset_type = match path.extension().and_then(|e| e.to_str()) {
             Some("unity") => "scene",
@@ -47,7 +47,9 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
         let timestamp_data = timestamps.remove(&path_str);
         let modified_ms = modified_ms(path).unwrap_or(0);
 
-        if let Some(data) = timestamp_data && data.timestamp == modified_ms {
+        if let Some(data) = timestamp_data
+            && data.timestamp == modified_ms
+        {
             trace!(path = path_str.as_str(), "skipping unchanged file");
             continue;
         }
@@ -128,6 +130,15 @@ fn index_file(
         parse_ms = t.elapsed().as_millis(),
         "blocks parsed"
     );
+
+    if is_font_asset(&blocks) {
+        let tx = conn.transaction()?;
+        let asset_id = db::upsert_asset(&tx, path, guid, asset_type, modified_ms)?;
+        db::mark_asset_indexed(&tx, asset_id, modified_ms)?;
+        tx.commit()?;
+        debug!(path, "skipping font asset");
+        return Ok(0);
+    }
 
     let t = Instant::now();
     let tx = conn.transaction()?;
@@ -271,6 +282,10 @@ fn insert_typed(
 
         BlockData::Generic(g) => {
             for field in &g.fields {
+                if util::is_numeric(&field.value) {
+                    continue;
+                }
+
                 db::insert_object_field(conn, oid, &field.key, &field.value)?;
             }
         }
@@ -288,6 +303,11 @@ fn modified_ms(path: &Path) -> anyhow::Result<i64> {
         .duration_since(SystemTime::UNIX_EPOCH)?
         .as_millis() as i64;
     Ok(ms)
+}
+
+fn is_font_asset(blocks: &[ParsedBlock]) -> bool {
+    blocks.iter().any(|b| matches!(&b.data, BlockData::Generic(g) if
+        g.fields.iter().any(|f| f.key == "m_GlyphTable")))
 }
 
 fn read_guid_from_meta(meta_path: &str) -> Option<String> {
