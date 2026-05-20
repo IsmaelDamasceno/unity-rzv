@@ -42,6 +42,8 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
 
         let asset_type = match path.extension().and_then(|e| e.to_str()) {
             Some("unity") => "scene",
+            Some("mp3") => "audio/mp3",
+            Some("wav") => "audio/wav",
             Some("prefab") => "prefab",
             Some("asset") => "asset",
             Some("cs") => "script",
@@ -60,6 +62,16 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
 
         let guid = read_guid_from_meta(&format!("{path_str}.meta"));
         debug!(path = path_str.as_str(), asset_type, "indexing file");
+
+        match asset_type {
+            "audio/mp3" => {
+                continue;
+            }
+            "audio/wav" => {
+                continue;
+            }
+            _ => {}
+        }
 
         match index_file(
             conn,
@@ -310,8 +322,10 @@ fn modified_ms(path: &Path) -> anyhow::Result<i64> {
 }
 
 fn is_font_asset(blocks: &[ParsedBlock]) -> bool {
-    blocks.iter().any(|b| matches!(&b.data, BlockData::Generic(g) if
-        g.fields.iter().any(|f| f.key == "m_GlyphTable")))
+    blocks.iter().any(|b| {
+        matches!(&b.data, BlockData::Generic(g) if
+        g.fields.iter().any(|f| f.key == "m_GlyphTable"))
+    })
 }
 
 fn read_guid_from_meta(meta_path: &str) -> Option<String> {
