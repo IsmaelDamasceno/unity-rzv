@@ -36,6 +36,10 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
         let path = entry.path();
         let path_str = path.to_string_lossy().replace('\\', "/");
 
+        if path_str.contains("PackageCache/com.unity") {
+            continue;
+        }
+
         let asset_type = match path.extension().and_then(|e| e.to_str()) {
             Some("unity") => "scene",
             Some("prefab") => "prefab",

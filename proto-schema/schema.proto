@@ -38,10 +38,6 @@ message IndexProjectRequest {
   string workspace_id = 1;
 }
 
-message ReIndexRequest {
-  string workspace_id = 1;
-}
-
 message IndexProjectResponse {
   uint32          assets_indexed  = 1;
   uint32          objects_indexed = 2;
@@ -168,7 +164,6 @@ service UnityDaemon {
   rpc ListWorkspaces       (ListWorkspacesRequest)       returns (ListWorkspacesResponse);
   rpc DeleteWorkspace      (DeleteWorkspaceRequest)      returns (DeleteWorkspaceResponse);
   rpc IndexProject         (IndexProjectRequest)         returns (IndexProjectResponse);
-  rpc ReIndex              (ReIndexRequest)              returns (IndexProjectResponse);
   rpc ListAssets           (ListAssetsRequest)           returns (ListAssetsResponse);
   rpc GetSceneHierarchy    (GetSceneHierarchyRequest)    returns (GetSceneHierarchyResponse);
   rpc FindByComponent      (FindByComponentRequest)      returns (FindByComponentResponse);

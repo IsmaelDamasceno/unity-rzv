@@ -159,15 +159,6 @@ impl UnityDaemon for DaemonService {
         run_index(conn_arc, project_path).await
     }
 
-    async fn re_index(
-        &self,
-        request: Request<ReIndexRequest>,
-    ) -> Result<Response<IndexProjectResponse>, Status> {
-        let id = request.into_inner().workspace_id;
-        let (conn_arc, project_path) = get_conn_and_proj_path(&self.registry, &id)?;
-        run_index(conn_arc, project_path).await
-    }
-
     async fn list_assets(
         &self,
         request: Request<ListAssetsRequest>,
