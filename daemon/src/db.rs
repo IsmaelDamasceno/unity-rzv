@@ -463,11 +463,12 @@ pub fn find_by_component(
              JOIN ancestry anc    ON anc.object_id = t.parent_id
              JOIN game_objects go ON go.object_id = t.game_object_id
          )
-         SELECT a.path, go.name, o_go.local_id, anc.ancestry_path, script_asset.path
+         SELECT a.path, go.name, o_comp.local_id, anc.ancestry_path, script_asset.path
          FROM asset_references ar
          JOIN assets script_asset        ON script_asset.guid = ar.to_guid
                                          AND script_asset.path LIKE '%' || ?1 || '%'
-         JOIN game_object_components goc ON goc.component_id = ar.from_object_id
+         JOIN objects o_comp             ON o_comp.id = ar.from_object_id
+         JOIN game_object_components goc ON goc.component_id = o_comp.id
          JOIN objects o_go               ON o_go.id = goc.game_object_id
          JOIN game_objects go            ON go.object_id = o_go.id
          JOIN assets a                   ON a.id = o_go.asset_id
@@ -600,7 +601,9 @@ pub fn find_by_local_id(
          )
          SELECT a.path, go.name, o_go.local_id, anc.ancestry_path, script_asset.path
          FROM asset_references ar
+         JOIN objects o_target            ON o_target.local_id = ?1
          JOIN objects o_comp              ON o_comp.id = ar.from_object_id
+                                         AND o_comp.asset_id = o_target.asset_id
          JOIN assets a                    ON a.id = o_comp.asset_id
          JOIN game_object_components goc  ON goc.component_id = o_comp.id
          JOIN objects o_go                ON o_go.id = goc.game_object_id
