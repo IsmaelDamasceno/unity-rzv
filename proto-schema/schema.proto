@@ -73,7 +73,7 @@ message HierarchyNode {
   string name          = 2;
   int32  depth         = 3;
   int32  sibling_index = 4;
-  string ancestry_path = 5; // "Root > Parent > Child"
+  string ancestry_path = 5; // "Root\x1FParent\x1FChild" (unit separator, 0x1F)
 }
 
 message GetSceneHierarchyResponse {
@@ -90,7 +90,7 @@ message GameObjectMatch {
   string scene_path    = 1;
   string name          = 2;
   string local_id      = 3;
-  string ancestry_path = 4; // "Root > Parent > GameObject"
+  string ancestry_path = 4; // "Root\x1FParent\x1FGameObject" (unit separator, 0x1F)
   string script_path   = 5;
 }
 
@@ -121,7 +121,7 @@ message FindByFieldValueResponse {
 
 message FindByFieldReferenceRequest {
   string workspace_id  = 1;
-  string target_script = 2; // substring match on referenced script asset path
+  string target_asset  = 2; // substring match on referenced asset path
   string scene_filter  = 3; // optional
 }
 
@@ -131,6 +131,7 @@ message FieldReferenceMatch {
   string game_object_local_id = 3;
   string script_path          = 4;
   string field_key            = 5;
+  string ancestry_path        = 6; // e.g. "GameController\x1FVideoPlayer\x1Fclip" (unit separator, 0x1F)
 }
 
 message FindByFieldReferenceResponse {

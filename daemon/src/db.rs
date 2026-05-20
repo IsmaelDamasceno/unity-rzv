@@ -342,6 +342,8 @@ pub struct FieldReferenceMatchRow {
     pub game_object_local_id: String,
     pub script_path: Option<String>,
     pub field_key: String,
+    pub class_id: String,
+    pub ancestry_path: Option<String>,
 }
 
 pub struct GameObjectDetailRow {
@@ -420,7 +422,7 @@ pub fn get_scene_hierarchy(
                AND (?1 = '' OR a.path LIKE '%' || ?1 || '%')
              UNION ALL
              SELECT t.object_id, o.local_id, go.name, t.parent_id, t.sibling_index,
-                    h.depth + 1, h.ancestry_path || ' > ' || go.name
+                    h.depth + 1, h.ancestry_path || char(31) || go.name
              FROM transforms t
              JOIN hierarchy h     ON h.object_id = t.parent_id
              JOIN objects o       ON o.id = t.object_id
@@ -456,7 +458,7 @@ pub fn find_by_component(
              JOIN game_objects go ON go.object_id = t.game_object_id
              WHERE t.parent_id IS NULL
              UNION ALL
-             SELECT t.object_id, anc.ancestry_path || ' > ' || go.name
+             SELECT t.object_id, anc.ancestry_path || char(31) || go.name
              FROM transforms t
              JOIN ancestry anc    ON anc.object_id = t.parent_id
              JOIN game_objects go ON go.object_id = t.game_object_id
@@ -530,13 +532,27 @@ pub fn find_by_field_value(
 
 pub fn find_by_field_reference(
     conn: &Connection,
-    target_script: &str,
+    target_asset: &str,
     scene_filter: &str,
 ) -> Result<Vec<FieldReferenceMatchRow>> {
     let mut stmt = conn.prepare(
-        "SELECT a.path, go.name, o_go.local_id, script_asset.path, f.key
-         FROM object_fields f
-         JOIN objects o_comp              ON o_comp.id = f.object_id
+        "WITH RECURSIVE ancestry(object_id, ancestry_path) AS (
+             SELECT t.object_id, go.name
+             FROM transforms t
+             JOIN game_objects go ON go.object_id = t.game_object_id
+             WHERE t.parent_id IS NULL
+             UNION ALL
+             SELECT t.object_id, anc.ancestry_path || char(31) || go.name
+             FROM transforms t
+             JOIN ancestry anc    ON anc.object_id = t.parent_id
+             JOIN game_objects go ON go.object_id = t.game_object_id
+         )
+         SELECT a.path, go.name, o_go.local_id, script_asset.path, ar.field_path,
+                CAST(o_comp.class_id AS TEXT), anc.ancestry_path
+         FROM asset_references ar
+         JOIN assets ref_asset            ON ref_asset.guid = ar.to_guid
+                                         AND ref_asset.path LIKE '%' || ?1 || '%'
+         JOIN objects o_comp              ON o_comp.id = ar.from_object_id
          JOIN game_object_components goc  ON goc.component_id = o_comp.id
          JOIN objects o_go                ON o_go.id = goc.game_object_id
          JOIN game_objects go             ON go.object_id = o_go.id
@@ -544,24 +560,21 @@ pub fn find_by_field_reference(
          LEFT JOIN asset_references ar_s  ON ar_s.from_object_id = o_comp.id
                                          AND ar_s.field_path = 'm_Script'
          LEFT JOIN assets script_asset    ON script_asset.guid = ar_s.to_guid
-         WHERE f.value IN (
-             SELECT '{fileID: ' || o.local_id || '}'
-             FROM asset_references ar
-             JOIN assets target ON target.guid = ar.to_guid
-                               AND target.path LIKE '%' || ?1 || '%'
-             JOIN objects o ON o.id = ar.from_object_id
-             WHERE ar.field_path = 'm_Script'
-         )
+         LEFT JOIN transforms t_go        ON t_go.game_object_id = o_go.id
+         LEFT JOIN ancestry anc           ON anc.object_id = t_go.object_id
+         WHERE ar.field_path != 'm_Script'
            AND (?2 = '' OR a.path LIKE '%' || ?2 || '%')
            AND a.asset_type = 'scene'",
     )?;
-    let rows = stmt.query_map(params![target_script, scene_filter], |row| {
+    let rows = stmt.query_map(params![target_asset, scene_filter], |row| {
         Ok(FieldReferenceMatchRow {
             scene_path: row.get(0)?,
             game_object_name: row.get(1)?,
             game_object_local_id: row.get(2)?,
             script_path: row.get(3)?,
             field_key: row.get(4)?,
+            class_id: row.get(5)?,
+            ancestry_path: row.get(6)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()

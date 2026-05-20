@@ -322,7 +322,7 @@ impl UnityDaemon for DaemonService {
         let req = request.into_inner();
         info!(
             workspace_id = req.workspace_id.as_str(),
-            target_script = req.target_script.as_str(),
+            target_asset = req.target_asset.as_str(),
             scene_filter = req.scene_filter.as_str(),
             "find_by_field_reference"
         );
@@ -330,7 +330,7 @@ impl UnityDaemon for DaemonService {
 
         let result = tokio::task::spawn_blocking(move || {
             let conn = conn_arc.lock().unwrap();
-            db::find_by_field_reference(&conn, &req.target_script, &req.scene_filter)
+            db::find_by_field_reference(&conn, &req.target_asset, &req.scene_filter)
                 .map_err(|e| format!("{e}"))
         })
         .await
@@ -340,12 +340,25 @@ impl UnityDaemon for DaemonService {
             Ok(rows) => Ok(Response::new(FindByFieldReferenceResponse {
                 matches: rows
                     .into_iter()
-                    .map(|r| FieldReferenceMatch {
-                        scene_path: r.scene_path,
-                        game_object_name: r.game_object_name,
-                        game_object_local_id: r.game_object_local_id,
-                        script_path: r.script_path.unwrap_or_default(),
-                        field_key: r.field_key,
+                    .map(|r| {
+                        let component_label = r.script_path.as_deref()
+                            .and_then(|p| Path::new(p).file_stem()?.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("class:{}", r.class_id));
+                        let ancestry = r.ancestry_path.as_deref().unwrap_or(&r.game_object_name);
+                        let ancestry_path  = ancestry
+                            .split('\x1F')
+                            .chain([component_label.as_str(), r.field_key.as_str()])
+                            .collect::<Vec<_>>()
+                            .join("\x1F");
+                        FieldReferenceMatch {
+                            scene_path: r.scene_path,
+                            game_object_name: r.game_object_name,
+                            game_object_local_id: r.game_object_local_id,
+                            script_path: r.script_path.unwrap_or_default(),
+                            field_key: r.field_key,
+                            ancestry_path ,
+                        }
                     })
                     .collect(),
             })),
