@@ -138,6 +138,16 @@ message FindByFieldReferenceResponse {
   repeated FieldReferenceMatch matches = 1;
 }
 
+message FindByLocalIdRequest {
+  string workspace_id = 1;
+  string scene_filter = 2; // partial scene path
+  string local_id     = 3;
+}
+
+message FindByLocalIdResponse {
+  repeated GameObjectMatch matches = 1;
+}
+
 message GetGameObjectRequest {
   string workspace_id = 1;
   string scene_path   = 2;
@@ -170,5 +180,6 @@ service UnityDaemon {
   rpc FindByComponent      (FindByComponentRequest)      returns (FindByComponentResponse);
   rpc FindByFieldValue     (FindByFieldValueRequest)     returns (FindByFieldValueResponse);
   rpc FindByFieldReference (FindByFieldReferenceRequest) returns (FindByFieldReferenceResponse);
+  rpc FindByLocalId        (FindByLocalIdRequest)        returns (FindByLocalIdResponse);
   rpc GetGameObject        (GetGameObjectRequest)        returns (GetGameObjectResponse);
 }

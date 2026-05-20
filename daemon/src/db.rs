@@ -581,6 +581,52 @@ pub fn find_by_field_reference(
         .map_err(Into::into)
 }
 
+pub fn find_by_local_id(
+    conn: &Connection,
+    local_id: &str,
+    scene_filter: &str,
+) -> Result<Vec<GameObjectMatchRow>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE ancestry(object_id, ancestry_path) AS (
+             SELECT t.object_id, go.name
+             FROM transforms t
+             JOIN game_objects go ON go.object_id = t.game_object_id
+             WHERE t.parent_id IS NULL
+             UNION ALL
+             SELECT t.object_id, anc.ancestry_path || char(31) || go.name
+             FROM transforms t
+             JOIN ancestry anc    ON anc.object_id = t.parent_id
+             JOIN game_objects go ON go.object_id = t.game_object_id
+         )
+         SELECT a.path, go.name, o_go.local_id, anc.ancestry_path, script_asset.path
+         FROM asset_references ar
+         JOIN objects o_comp              ON o_comp.id = ar.from_object_id
+         JOIN assets a                    ON a.id = o_comp.asset_id
+         JOIN game_object_components goc  ON goc.component_id = o_comp.id
+         JOIN objects o_go                ON o_go.id = goc.game_object_id
+         JOIN game_objects go             ON go.object_id = o_go.id
+         LEFT JOIN asset_references ar_s  ON ar_s.from_object_id = o_comp.id
+                                         AND ar_s.field_path = 'm_Script'
+         LEFT JOIN assets script_asset    ON script_asset.guid = ar_s.to_guid
+         LEFT JOIN transforms t_go        ON t_go.game_object_id = o_go.id
+         LEFT JOIN ancestry anc           ON anc.object_id = t_go.object_id
+         WHERE ar.to_file_id = ?1
+           AND (?2 = '' OR a.path LIKE '%' || ?2 || '%')
+           AND a.asset_type = 'scene'",
+    )?;
+    let rows = stmt.query_map(params![local_id, scene_filter], |row| {
+        Ok(GameObjectMatchRow {
+            scene_path: row.get(0)?,
+            name: row.get(1)?,
+            local_id: row.get(2)?,
+            ancestry_path: row.get(3)?,
+            script_path: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 pub fn get_game_object(
     conn: &Connection,
     scene_path: &str,

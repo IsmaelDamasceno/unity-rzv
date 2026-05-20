@@ -13,6 +13,7 @@ use crate::unity_data::{
     DeleteWorkspaceRequest, DeleteWorkspaceResponse, FieldMatch, FieldReferenceMatch,
     FindByComponentRequest, FindByComponentResponse, FindByFieldReferenceRequest,
     FindByFieldReferenceResponse, FindByFieldValueRequest, FindByFieldValueResponse,
+    FindByLocalIdRequest, FindByLocalIdResponse,
     GameObjectMatch, GetGameObjectRequest, GetGameObjectResponse, GetSceneHierarchyRequest,
     GetSceneHierarchyResponse, HierarchyNode, IndexProjectRequest, IndexProjectResponse,
     ListAssetsRequest, ListAssetsResponse, ListWorkspacesRequest, ListWorkspacesResponse, WorkspaceInfo,
@@ -359,6 +360,44 @@ impl UnityDaemon for DaemonService {
                             field_key: r.field_key,
                             ancestry_path ,
                         }
+                    })
+                    .collect(),
+            })),
+            Err(e) => Err(Status::internal(e)),
+        }
+    }
+
+    async fn find_by_local_id(
+        &self,
+        request: Request<FindByLocalIdRequest>,
+    ) -> Result<Response<FindByLocalIdResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            workspace_id = req.workspace_id.as_str(),
+            local_id = req.local_id.as_str(),
+            scene_filter = req.scene_filter.as_str(),
+            "find_by_local_id"
+        );
+        let conn_arc = get_conn(&self.registry, &req.workspace_id)?;
+
+        let result = tokio::task::spawn_blocking(move || {
+            let conn = conn_arc.lock().unwrap();
+            db::find_by_local_id(&conn, &req.local_id, &req.scene_filter)
+                .map_err(|e| format!("{e}"))
+        })
+        .await
+        .map_err(|e| Status::internal(format!("task panicked: {e}")))?;
+
+        match result {
+            Ok(rows) => Ok(Response::new(FindByLocalIdResponse {
+                matches: rows
+                    .into_iter()
+                    .map(|r| GameObjectMatch {
+                        scene_path: r.scene_path,
+                        name: r.name,
+                        local_id: r.local_id,
+                        ancestry_path: r.ancestry_path.unwrap_or_default(),
+                        script_path: r.script_path.unwrap_or_default(),
                     })
                     .collect(),
             })),
