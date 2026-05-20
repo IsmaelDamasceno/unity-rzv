@@ -15,8 +15,7 @@ use crate::unity_data::{
     FindByFieldReferenceResponse, FindByFieldValueRequest, FindByFieldValueResponse,
     GameObjectMatch, GetGameObjectRequest, GetGameObjectResponse, GetSceneHierarchyRequest,
     GetSceneHierarchyResponse, HierarchyNode, IndexProjectRequest, IndexProjectResponse,
-    ListAssetsRequest, ListAssetsResponse, ListWorkspacesRequest, ListWorkspacesResponse,
-    ReIndexRequest, WorkspaceInfo,
+    ListAssetsRequest, ListAssetsResponse, ListWorkspacesRequest, ListWorkspacesResponse, WorkspaceInfo,
 };
 use crate::{db, indexer};
 
