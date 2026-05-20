@@ -22,19 +22,29 @@ pub struct IndexStats {
 
 /// Walks `assets_path`, indexes every relevant file into `conn`.
 /// Files whose modification time matches the stored value are skipped.
-pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Result<IndexStats> {
+pub fn index_project(project_path: &Path, conn: &mut Connection) -> anyhow::Result<IndexStats> {
     let finders = Finders::new();
     let mut stats = IndexStats::default();
     let mut timestamps = db::list_asset_timestamps(conn)?;
 
-    for entry in WalkDir::new(assets_path)
+    let root_prefix_len = {
+        let s = project_path.to_string_lossy().replace('\\', "/");
+        s.trim_end_matches('/').len() + 1 // skip trailing separator
+    };
+
+    for entry in WalkDir::new(project_path)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
     {
         let path = entry.path();
-        let path_str = path.to_string_lossy().replace('\\', "/");
+        let full_str = path.to_string_lossy().replace('\\', "/");
+        let path_str = if full_str.len() > root_prefix_len {
+            full_str[root_prefix_len..].to_string()
+        } else {
+            full_str.clone()
+        };
 
         if path_str.contains("PackageCache/com.unity") {
             continue;
@@ -60,22 +70,13 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
             continue;
         }
 
-        let guid = read_guid_from_meta(&format!("{path_str}.meta"));
+        let guid = read_guid_from_meta(&format!("{full_str}.meta"));
         debug!(path = path_str.as_str(), asset_type, "indexing file");
-
-        match asset_type {
-            "audio/mp3" => {
-                continue;
-            }
-            "audio/wav" => {
-                continue;
-            }
-            _ => {}
-        }
 
         match index_file(
             conn,
             &path_str,
+            &full_str,
             guid.as_deref(),
             asset_type,
             modified_ms,
@@ -104,9 +105,27 @@ pub fn index_project(assets_path: &Path, conn: &mut Connection) -> anyhow::Resul
 
 // ── Per-file indexing ─────────────────────────────────────────────────────────
 
+fn index_unparsed(
+    conn: &mut Connection,
+    path: &str,
+    guid: Option<&str>,
+    asset_type: &str,
+    modified_ms: i64,
+) -> anyhow::Result<()> {
+    let t = Instant::now();
+    let tx = conn.transaction()?;
+    let asset_id = db::upsert_asset(&tx, path, guid, asset_type, modified_ms)?;
+    db::delete_asset_objects(&tx, asset_id)?;
+    db::mark_asset_indexed(&tx, asset_id, modified_ms)?;
+    tx.commit()?;
+    debug!(path, db_ms = t.elapsed().as_millis(), "script recorded");
+    Ok(())
+}
+
 fn index_file(
     conn: &mut Connection,
     path: &str,
+    abs_path: &str,
     guid: Option<&str>,
     asset_type: &str,
     modified_ms: i64,
@@ -115,19 +134,16 @@ fn index_file(
     let file_start = Instant::now();
     info!(path, asset_type, "indexing file");
 
-    if asset_type == "script" {
-        let t = Instant::now();
-        let tx = conn.transaction()?;
-        let asset_id = db::upsert_asset(&tx, path, guid, asset_type, modified_ms)?;
-        db::delete_asset_objects(&tx, asset_id)?;
-        db::mark_asset_indexed(&tx, asset_id, modified_ms)?;
-        tx.commit()?;
-        debug!(path, db_ms = t.elapsed().as_millis(), "script recorded");
-        return Ok(0);
+    match asset_type {
+        "audio/mp3" | "audio/wav" => {
+            index_unparsed(conn, path, guid, asset_type, modified_ms)?;
+            return Ok(0);
+        }
+        _ => {}
     }
 
     let t = Instant::now();
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(abs_path)?;
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let data: &[u8] = &mmap;
     debug!(

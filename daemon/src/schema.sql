@@ -2,7 +2,7 @@ CREATE TABLE IF NOT EXISTS "assets" (
   "id"               INTEGER PRIMARY KEY,
   "path"             TEXT    UNIQUE NOT NULL,
   "guid"             TEXT    UNIQUE,
-  "asset_type"       TEXT    CHECK (asset_type IN ('scene', 'prefab', 'asset', 'script', 'unknown')),
+  "asset_type"       TEXT    CHECK (asset_type IN ('scene', 'prefab', 'asset', 'script', 'audio/mp3', 'audio/wav', 'unknown')),
   "last_modified_ms" INTEGER NOT NULL DEFAULT 0,
   "last_indexed_ms"  INTEGER NOT NULL DEFAULT 0
 );
