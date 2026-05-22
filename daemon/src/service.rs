@@ -209,25 +209,37 @@ impl UnityDaemon for DaemonService {
 
         let result = tokio::task::spawn_blocking(move || {
             let conn = conn_arc.lock().unwrap();
-            db::get_scene_hierarchy(&conn, &req.scene_path, req.max_depth)
+            db::get_scene_hierarchy(&conn, &req.scene_path, req.max_depth, &req.exclude_scripts)
                 .map_err(|e| format!("{e}"))
         })
         .await
         .map_err(|e| Status::internal(format!("task panicked: {e}")))?;
 
         match result {
-            Ok(rows) => Ok(Response::new(GetSceneHierarchyResponse {
-                nodes: rows
-                    .into_iter()
-                    .map(|r| HierarchyNode {
-                        local_id: r.local_id,
-                        name: r.name,
-                        depth: r.depth,
-                        sibling_index: r.sibling_index,
-                        ancestry_path: r.ancestry_path,
-                    })
-                    .collect(),
-            })),
+            Ok(rows) => {
+                if req.as_string {
+                    let tree = rows
+                        .iter()
+                        .map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.name))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(Response::new(GetSceneHierarchyResponse { nodes: vec![], tree }))
+                } else {
+                    Ok(Response::new(GetSceneHierarchyResponse {
+                        nodes: rows
+                            .into_iter()
+                            .map(|r| HierarchyNode {
+                                local_id: r.local_id,
+                                name: r.name,
+                                depth: r.depth,
+                                sibling_index: r.sibling_index,
+                                ancestry_path: r.ancestry_path,
+                            })
+                            .collect(),
+                        tree: String::new(),
+                    }))
+                }
+            }
             Err(e) => Err(Status::internal(e)),
         }
     }

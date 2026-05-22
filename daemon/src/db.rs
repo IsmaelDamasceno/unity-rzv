@@ -410,9 +410,32 @@ pub fn get_scene_hierarchy(
     conn: &Connection,
     scene_filter: &str,
     max_depth: i32,
+    exclude_scripts: &[String],
 ) -> Result<Vec<HierarchyRow>> {
-    let mut stmt = conn.prepare(
-        "WITH RECURSIVE hierarchy(object_id, local_id, name, parent_id, sibling_index, depth, ancestry_path) AS (
+    let (exclude_cte, exclude_filter) = if exclude_scripts.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let conditions: String = (0..exclude_scripts.len())
+            .map(|i| format!("sa.path LIKE '%' || ?{} || '%'", i + 3))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let cte = format!(
+            "excluded(game_object_id) AS (
+                 SELECT goc.game_object_id
+                 FROM game_object_components goc
+                 JOIN asset_references ar ON ar.from_object_id = goc.component_id
+                                         AND ar.field_path = 'm_Script'
+                 JOIN assets sa           ON sa.guid = ar.to_guid
+                 WHERE {conditions}
+             ),",
+        );
+        let filter = "AND t.game_object_id NOT IN (SELECT game_object_id FROM excluded)".to_string();
+        (cte, filter)
+    };
+
+    let sql = format!(
+        "WITH {exclude_cte}
+         RECURSIVE hierarchy(object_id, local_id, name, parent_id, sibling_index, depth, ancestry_path) AS (
              SELECT t.object_id, o.local_id, go.name, t.parent_id, t.sibling_index, 0, go.name
              FROM transforms t
              JOIN objects o       ON o.id = t.object_id
@@ -420,6 +443,7 @@ pub fn get_scene_hierarchy(
              JOIN game_objects go ON go.object_id = t.game_object_id
              WHERE t.parent_id IS NULL
                AND (?1 = '' OR a.path LIKE '%' || ?1 || '%')
+               {exclude_filter}
              UNION ALL
              SELECT t.object_id, o.local_id, go.name, t.parent_id, t.sibling_index,
                     h.depth + 1, h.ancestry_path || char(31) || go.name
@@ -428,20 +452,34 @@ pub fn get_scene_hierarchy(
              JOIN objects o       ON o.id = t.object_id
              JOIN game_objects go ON go.object_id = t.game_object_id
              WHERE (?2 = 0 OR h.depth + 1 < ?2)
+               {exclude_filter}
          )
          SELECT local_id, name, depth, sibling_index, ancestry_path
          FROM hierarchy
-         ORDER BY ancestry_path",
+         ORDER BY ancestry_path"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(scene_filter.to_string()),
+        Box::new(max_depth),
+    ];
+    for s in exclude_scripts {
+        param_values.push(Box::new(s.clone()));
+    }
+
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(param_values.iter().map(|p| p.as_ref())),
+        |row| {
+            Ok(HierarchyRow {
+                local_id: row.get(0)?,
+                name: row.get(1)?,
+                depth: row.get(2)?,
+                sibling_index: row.get(3)?,
+                ancestry_path: row.get(4)?,
+            })
+        },
     )?;
-    let rows = stmt.query_map(params![scene_filter, max_depth], |row| {
-        Ok(HierarchyRow {
-            local_id: row.get(0)?,
-            name: row.get(1)?,
-            depth: row.get(2)?,
-            sibling_index: row.get(3)?,
-            ancestry_path: row.get(4)?,
-        })
-    })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
