@@ -27,7 +27,7 @@ message ListWorkspacesResponse {
 }
 
 message DeleteWorkspaceRequest {
-  string workspace_id       = 1;
+  string workspace_id = 1;
 }
 
 message DeleteWorkspaceResponse {}
@@ -63,9 +63,11 @@ message ListAssetsResponse {
 }
 
 message GetSceneHierarchyRequest {
-  string workspace_id = 1;
-  string scene_path   = 2; // substring match
-  int32  max_depth    = 3; // 0 = unlimited
+  string          workspace_id     = 1;
+  string          scene_path       = 2; // substring match
+  int32           max_depth        = 3; // 0 = unlimited
+  bool            as_string        = 4; // return tree as formatted string instead of nodes
+  repeated string exclude_scripts  = 5; // exclude game objects with these script name substrings
 }
 
 message HierarchyNode {
@@ -78,6 +80,7 @@ message HierarchyNode {
 
 message GetSceneHierarchyResponse {
   repeated HierarchyNode nodes = 1;
+  string                 tree  = 2; // populated when as_string = true
 }
 
 message FindByComponentRequest {
@@ -120,9 +123,9 @@ message FindByFieldValueResponse {
 }
 
 message FindByFieldReferenceRequest {
-  string workspace_id  = 1;
-  string target_asset  = 2; // substring match on referenced asset path
-  string scene_filter  = 3; // optional
+  string workspace_id = 1;
+  string target_asset = 2; // substring match on referenced asset path
+  string scene_filter = 3; // optional
 }
 
 message FieldReferenceMatch {
@@ -175,6 +178,7 @@ service UnityDaemon {
   rpc ListWorkspaces       (ListWorkspacesRequest)       returns (ListWorkspacesResponse);
   rpc DeleteWorkspace      (DeleteWorkspaceRequest)      returns (DeleteWorkspaceResponse);
   rpc IndexProject         (IndexProjectRequest)         returns (IndexProjectResponse);
+
   rpc ListAssets           (ListAssetsRequest)           returns (ListAssetsResponse);
   rpc GetSceneHierarchy    (GetSceneHierarchyRequest)    returns (GetSceneHierarchyResponse);
   rpc FindByComponent      (FindByComponentRequest)      returns (FindByComponentResponse);
